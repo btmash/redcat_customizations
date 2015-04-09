@@ -1,0 +1,45 @@
+<?php
+
+/**
+ * Implementation of hook_install().
+ */
+function redcat_customizations_install() {
+  
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function redcat_customizations_uninstall() {
+  
+}
+
+/**
+ * Implementation of hook_update_N().
+ * Set the font rendering display style to hidden until font loads.
+ */
+function redcat_customizations_update_7000() {
+  variable_set('google_webfont_loader_api_display_style', 'hidden');
+}
+
+/**
+ * Enable entity reference, configuration, references migrate.
+ */
+function redcat_customizations_update_7001() {
+  $enabled_modules = array(
+    'configuration',
+    'entityreference',
+    'entityreference_prepopulate',
+    'references_migrate',
+  );
+  module_enable($enabled_modules);
+  drupal_set_message('Enabled entityreference, migration, and configuration module. Disable migration once you are done.');
+}
+
+/**
+ * Enable imagecache actions.
+ */
+function redcat_customizations_update_7002() {
+  module_enable('imagecache_actions');
+  module_enable('imagecache_canvasactions');
+}

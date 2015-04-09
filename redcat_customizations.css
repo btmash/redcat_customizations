@@ -1,0 +1,9 @@
+/**
+ @file redcat_customizations.css
+ This is css to provide some level of definition to what is occurring in the calendar
+ */
+
+#redcat-datepicker .ui-datepicker-calendar tr:hover a {
+  background: none;
+  background-color: #ACE;
+}

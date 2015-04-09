@@ -1,0 +1,630 @@
+<?php
+
+/**
+ * Implements hook_init().
+ */
+function redcat_customizations_init() {
+  if(drupal_match_path($_GET['q'], "media\nmedia*") && !drupal_match_path($_GET['q'], "media/mobile\nmedia/mobile*")) {
+    $url = $_GET['q'];
+    $user_agent = $_SERVER['HTTP_USER_AGENT'];
+    $path = 'media';
+    $options = array();
+    $redirect = FALSE;
+    if (isset($_REQUEST['position'])) {
+      $redirect = TRUE;
+      $options['fragment'] = 'redcat_media_slideshow-page:'. $_REQUEST['position'];
+    }
+    if (stripos($user_agent, 'android') !== FALSE
+        || stripos($user_agent, 'iphone') !== FALSE
+        || stripos($user_agent, 'ipod') !== FALSE
+        || stripos($user_agent, 'ipad') !== FALSE) {
+      $redirect = TRUE;
+      $path = 'media/mobile';
+      if (isset($_REQUEST['position'])) {
+        $options['fragment'] = 'redcat_media_slideshow-page_1:' . $_REQUEST['position'];
+      }
+    }
+    if ($redirect) {
+      drupal_goto($path, $options);
+    }
+  }
+}
+
+/**
+ * Implements hook_entity_info_alter
+ */
+function redcat_customizations_entity_info_alter(&$entity_info) {
+  $entity_info['node']['uri callback'] = 'redcat_customizations_node_uri';
+}
+
+/**
+ * Overrides node uri for videos to go to the media slideshow page.
+ * This link is essentially hardcoded so these changes will have to be in code
+ * if there are changes to the slideshow in the future.
+ */
+function redcat_customizations_node_uri($node) {
+  $uri = node_uri($node);
+  if ($node->type == 'redcat_video' && _redcat_customizations_check_url_rewrite() && module_exists('nodequeue')) {
+    $position = redcat_customizations_retrieve_nodequeue_position($node, TRUE);
+    if (isset($position)) {
+        $uri['path'] = 'media';
+        $uri['options']['query'] = array(
+          'position' => $position,
+        );
+        $uri['options']['fragment'] = 'redcat_media_slideshow-page:'. $position;
+    }
+  }
+  return $uri;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function redcat_customizations_menu() {
+  $items = array();
+  
+  return $items;
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function redcat_customizations_node_presave($node) {
+  _redcat_customizations_check_url_rewrite(FALSE);
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function redcat_customizations_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'signup_form') {
+    if (isset($form['collapse'])) {
+      $form['collapse']['#type'] = 'fieldset';
+      $form['collapse']['#title'] = t('Sign up for reminders');
+      $form['collapse']['#collapsible'] = TRUE;
+      $form['collapse']['#collapsed'] = TRUE;
+    }
+  }
+  else if ($form_id == 'signup_broadcast_form') {
+    $form['from']['#default_value'] = 'do-not-reply@redcat.org';
+  }
+  else if ($form_id == 'signup_node_admin_summary_form') {
+    $form['submit']['#submit'][] = $form['#submit'][] = 'redcat_customizations_signup_node_admin_summary_form_submit';
+  }
+  else if ($form_id == 'search_form') {
+    if (isset($form['basic']['keys']) && !empty($form['basic']['keys']['#default_value'])) {
+      $title = drupal_get_title() .': '. $form['basic']['keys']['#default_value'];
+      drupal_set_title($title);
+    }
+  }
+  else if ($form_id == 'search_block_form') {
+    $form['search_block_form']['#attributes']['placeholder'] = t('Search...');
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function redcat_customizations_block_info() {
+  $blocks['calendar-picker'] = array(
+    'info' => t('Calendar Picker'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  $blocks['calendar-date-browser'] = array(
+    'info' => t('REDCAT Calendar Date Browser'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function redcat_customizations_block_view($delta = '') {
+  $block = array();
+  switch ($delta) {
+    case 'calendar-picker':
+      // Add extra libraries
+      drupal_add_library('system', 'ui.datepicker');
+      drupal_add_js(drupal_get_path('module', 'redcat_customizations') .'/redcat_customizations.js');
+      drupal_add_css(drupal_get_path('module', 'date_popup')  .'/themes/datepicker.1.7.css');
+      drupal_add_css(drupal_get_path('module', 'redcat_customizations'). '/redcat_customizations.css');
+      
+      // Add the customized settings
+      $calendar_uri = url('calendar', array('absolute' => TRUE));
+      $date = date('Y-m-d');
+      $month = date('Y-m');
+      $month_view_url = url("calendar/$month");
+      $view = views_get_page_view();
+      if (!empty($view) && $view->name == 'redcat_calendar' && isset($view->args[0])) {
+        $date = date($view->args[0]);
+      }
+      $date = new DateObject($date);
+      drupal_add_js(array('redcat_event_base_uri' => $calendar_uri, 'redcat_event_dates' => _redcat_customizations_retrieve_event_dates()), 'setting');
+      drupal_add_js(array('redcat_event_default_date' => date_format_date($date, 'custom', 'm/d/Y')), 'setting');
+      
+      $block['subject'] = t('Calendar');
+      $block['content'] = "<div id='redcat-event-nojs'><a href=\"$calendar_uri\">Events this week</a> will be a link. You must have javascript enabled in order to use the date picker.<div><a id='redcat-datepicker-month-view' href='$month_view_url'>Current Month view</a></div></div><div id='redcat-datepicker'></div><div id='redcat-datepicker-details'><div class='loading'></div><div class='content'></div></div><div id='redcat-datepicker-footer'></div>";
+      break;
+      
+    case 'calendar-date-browser':
+      $views_page = views_get_page_view();
+      if ($views_page && 'redcat_calendar' == $views_page->name) {
+        $date = arg(1);
+        $date = isset($date) ? $date : date('Y-m-d');
+        $block['subject'] = t('Date Browser');
+        if (strlen($date) > 7) {
+          $block['content'] = _redcat_customizations_views_post_week_build($date);
+        }
+        else {
+          $block['content'] = _redcat_customizations_views_post_month_build($date);
+        }
+      }
+      break;
+  }
+  return $block;
+}
+
+/**
+ * Implements hook_node_CONTENT_TYPE_form_submit().
+ */
+function redcat_customizations_signup_node_admin_summary_form_submit($form, &$form_state) {
+  if (module_exists('entitycache')) {
+    $nid = $form_state['values']['nid'];
+    cache_clear_all($nid, 'cache_entity_node');
+  }
+}
+
+/**
+ * Implements hook_field_extra_fields().
+ */
+function redcat_customizations_field_extra_fields() {
+  $extras = array();
+
+  $entities_bundles = entity_get_info();
+  foreach ($entities_bundles as $entity_key => $entity_info) {
+    if ($entity_info['fieldable']) {
+      foreach ($entity_info['bundles'] as $bundle_key => $bundle_info) {
+        $extras[$entity_key][$bundle_key]['display']['redcat_customizations_er_links'] = array(
+          'label' => t('REDCAT Customizations: Entity Reference Create Links'),
+          'description' => t('Create referenced entities that backreference current entity.'),
+          'weight' => 10,
+        );
+      }
+    }
+  }
+
+  return $extras;
+}
+
+/**
+ * Implements hook_entity_view_alter().
+ */
+function redcat_customizations_entity_view_alter(&$build, $type) {
+  static $field_list, $field_instances;
+  if (!isset($field_list)) {
+    $params = array(
+      'module' => 'entityreference'
+    );
+    $field_list = field_read_fields($params);
+    foreach ($field_list as $field_info) {
+      $params = array(
+        'field_id' => $field_info['id'],
+      );
+      $field_instances[$field_info['field_name']] = field_read_instances($params);
+    }
+  }
+
+  $view_mode = $build['#view_mode'];
+  $entity_data = entity_get_info($type);
+  $entity = _redcat_customizations_extract_entity_from_build($build);
+  $entity_ids = entity_extract_ids($type, $entity);
+  $fields = field_extra_fields_get_display($type, $entity_ids[2], $view_mode);
+  $links = array();
+  if ($fields['redcat_customizations_er_links']['visible'] == TRUE) {
+    $entity_type = $build['#entity_type'];
+    $bundle = $build['#bundle'];
+    foreach ($field_list as $field_info) {
+      if ($field_info['settings']['target_type'] == $entity_type && in_array($bundle, $field_info['settings']['handler_settings']['target_bundles'])) {
+        foreach ($field_instances[$field_info['field_name']] as $field_instance_setting) {
+          if (isset($field_instance_setting['settings']['behaviors']['prepopulate']) && $field_instance_setting['settings']['behaviors']['prepopulate']['status'] == 1) {
+            if ($field_instance_setting['entity_type'] == 'node' && node_access('create', $field_instance_setting['bundle'])) {
+              $translations = array(
+                '@type' => $field_instance_setting['bundle'],
+                '@field' => $field_instance_setting['label'],
+              );
+              $links[] = l(t('Create @type for reference field @field', $translations), 'node/add/'. str_replace('_', '-', $field_instance_setting['bundle']), array('query' => array($field_info['field_name'] => $entity->nid)));
+            }
+          }
+        }
+      }
+    }
+  }
+  if (!empty($links)) {
+    $build['redcat_customizations_er_links'] = array(
+      '#markup' => theme('item_list', array('items' => $links, 'title' => t('Create Referenced Items'))),
+      '#weight' => $fields['redcat_customizations_er_links']['weight'],
+    );
+  }
+}
+
+/********** CONTRIB CUSTOMIZATIONS **********/
+
+function redcat_customizations_apachesolr_index_document_build_node(ApacheSolrDocument $document, $entity, $entity_type, $env_id) {
+  $date_range = field_get_items('node', $entity, 'field_content_date_range');
+  if ($date_range) {
+    $document->addField('ds_start_date', apachesolr_date_iso(strtotime($date_range[0]['value'])));
+    $document->addField('ds_end_date', apachesolr_date_iso(strtotime($date_range[0]['value2'])));
+  }
+}
+
+function redcat_customizations_apachesolr_query_prepare($query) {
+  $query->setAvailableSort('ds_start_date', array(
+    'title' => 'Event Start Date',
+    'default' => 'desc',
+  ));
+}
+
+function redcat_customizations_apachesolr_query_alter($query) {
+  $query->addParam('fl', 'ds_start_date');
+  $query->setSolrsort('ds_start_date', 'desc');
+}
+
+/**
+ * Implements hook_views_post_build().
+ */
+function redcat_customizations_views_post_build(&$view) {
+  if ($view->name == 'redcat_calendar' && $view->current_display == 'redcat-calendar-page') {
+    $date = isset($view->args[0]) ? $view->args[0] : date('Y-m-d');
+    if (strlen($date) > 7) {
+      $view->attachment_before = _redcat_customizations_views_post_week_build($date);
+    }
+    else {
+      $view->attachment_before = _redcat_customizations_views_post_month_build($date);
+    }
+  }
+  if ($view->name == 'discipline' && $view->current_display == 'entity_view_1') {
+    $term = taxonomy_term_load($view->args[0]);
+    $pattern = array(
+      ' ',
+      '/',
+    );
+    $replacement = array(
+      '-',
+      '',
+    );
+    $uri = 'event-archive/'. drupal_strtolower(str_replace($pattern, $replacement, $term->name));
+    $query_options = array();
+    if (module_exists('facetapi') && module_exists('apachesolr')) {
+      $searchers = facetapi_get_searcher_info();
+      foreach ($searchers as $searcher_key => $searcher) {
+        $facets = facetapi_get_enabled_facets($searcher_key);
+        foreach ($facets as $facet) {
+          if (isset($facet['field api name']) && $facet['field api name'] == 'field_content_event_type') {
+            $uri = 'search/site';
+            $query_options = array('f[0]' => $facet['field alias'] .':'. $term->tid);
+          }
+        }
+      }
+    }
+    $view->attachment_after = l(t('Search Event Archive'), $uri, array('attributes' => array('class' => array('column-more')), 'query' => $query_options));
+  }
+  if ($view->name == 'upcoming_galleries' && $view->current_display == 'page_1' && module_exists('facetapi') && module_exists('apachesolr')) {
+    $view->attachment_after = l(t('Gallery Exhibition Archive'), 'search/site', array('attributes' => array('class' => array('column-more')), 'query' => array('f[0]' => 'bundle:gallery_exhibition')));
+  }
+  if ($view->name == 'upcoming_theater_events' && $view->current_display == 'page_1' && module_exists('facetapi') && module_exists('apachesolr')) {
+    $view->attachment_after = l(t('Theater Events Archive'), 'search/site', array('attributes' => array('class' => array('column-more')), 'query' => array('f[0]' => 'bundle:redcat_event')));
+  }
+}
+
+/**
+ * Implements hook_views_pre_render().
+ */
+function redcat_customizations_views_pre_render(&$view) {
+  if ($view->name == 'frontpage_upcoming_events' && $view->current_display == 'page_1') {
+    $view->footer['area']->options['content'] = '<div class="column-more">'. l(t('ALL UPCOMING EVENTS'), 'theater') .'</div>';
+  }
+  if ($view->name == 'related_media' && $view->current_display == 'related_video_view') {
+    foreach ($view->result as $result) {
+      // Change to reverse position.
+      if (isset($result->nodequeue_nodes_node_position)) {
+        $result->nodequeue_nodes_node_position = redcat_customizations_retrieve_nodequeue_position(node_load($result->nid), TRUE);
+      }
+    }
+  }
+  if ($view->name == 'upcoming_galleries' && $view->current_display == 'block_1') {
+    $view->footer['area']->options['content'] = '<div class="column-more">'. l(t('ALL UPCOMING EXHIBITIONS'), 'gallery') .'</div>';
+  }
+}
+
+/**
+ * Retrieves reverse position of media.
+ */
+function redcat_customizations_retrieve_nodequeue_position($node, $reverse = FALSE) {
+  $account = user_load(1);
+  $queues = nodequeue_load_queues_by_type($node->type, NULL, $account);
+  if (count($queues > 0)) {
+    $queue = array_shift($queues);
+    $subqueue = nodequeue_load_subqueue($queue->qid);
+    $position = nodequeue_get_subqueue_position($subqueue->qid, $node->nid);
+    if ($position > 0) {
+      if ($reverse) {
+        return $subqueue->count - $position;
+      }
+      return $position - 1;
+    }
+  }
+  return NULL;
+}
+
+/**
+ * Show a week pager of the date range view.
+ */
+function _redcat_customizations_views_post_week_build($date) {
+  $date_range = _redcat_customizations_get_date_week_range($date);
+  
+  $prev_week = new DateObject($date .'-7 days');
+  $next_week = new DateObject($date .'+7 days');
+  
+  $content = '<div class="redcat-calendar-previous-week">'.
+    l(t('Previous Week'), 'calendar/'. date_format_date($prev_week, 'custom', 'Y-m-d'))
+    .'</div>';
+  $content .= '<div class="redcat-calendar-browse-label">';
+  $content .= t('<span class="redcat-calendar-browse-icon"> </span> Events from %date_from to %date_to',
+    array(
+      '%date_from' => date_format_date($date_range[0], 'custom', 'F j'),
+      '%date_to' => date_format_date($date_range[1], 'custom', 'F j'),
+    ));
+  $content .='</div>';
+  $content .= '<div class="redcat-calendar-next-week">'.
+    l(t('Next Week'), 'calendar/'. date_format_date($next_week, 'custom', 'Y-m-d'))
+    .'</div>';
+  $month = l('Month View', 'calendar/'. date_format_date($date_range[0], 'custom', 'Y-m'));
+  $content .= '<div class="redcat-calendar-switch-month">'. $month .'</div>';
+  return $content;
+}
+
+/**
+ * Show a week pager of the date range view.
+ */
+function _redcat_customizations_views_post_month_build($date) {
+  $date_range = _redcat_customizations_get_date_month_range($date);
+  $prev_month = new DateObject($date .' -1 month');
+  $next_month = new DateObject($date .' +1 month');
+  
+  $content = '<div class="redcat-calendar-previous-month">'.
+    l('Previous Month', 'calendar/'. date_format_date($prev_month, 'custom', 'Y-m'))
+    .'</div>';
+  $content .= '<div class="redcat-calendar-browse-label">';
+  $content .= t('<span class="redcat-calendar-browse-icon"> </span> Events from %date_from to %date_to',
+    array(
+      '%date_from' => date_format_date($date_range[0], 'custom', 'F j'),
+      '%date_to' => date_format_date($date_range[1], 'custom', 'F j'),
+    ));
+  $content .= '</div>';
+  $content .= '<div class="redcat-calendar-next-month">'.
+    l('Next Month', 'calendar/'. date_format_date($next_month, 'custom', 'Y-m'))
+    .'</div>';
+  return $content;
+}
+
+/**
+ * Implements hook_views_query_alter().
+ */
+function redcat_customizations_views_query_alter(&$view, &$query) {
+  // NEW FROM STEPH VIEWS FILTERING FOR FESTIVAL MENU ITEMS
+  // DEALING WITH FESTIVAL MENUS
+
+/*
+  if ($view->name == 'view_festival_related_pages_menu') {
+    if ($view->current_display == 'block') {
+   		//dpm($view); dpm($query);
+	    if (isset($query->where)) {
+	   		$argument = $query->fields['node_field_data_field_parent_festival_nid']['field'];
+	      $query->where[1]['conditions'][2]['field'] = "field_data_field_parent_festival.field_parent_festival_target_id";
+	      $query->where[1]['conditions'][2]['value'][0] = "node.nid"; //this should be the current page's parent_festival nodeid
+	      $query->where[1]['conditions'][2]['operator'] = "=";
+	      
+	      dpm($query->where);
+	    }
+    }
+  }
+
+*/
+  
+  // Remember to add any other necessary conditions
+  // DEALING WITH CALENDAR
+  if ($view->name == 'redcat_calendar') {
+    // Figure out the date to resolve all this information for.
+    // Figure out the arguments if it is a block
+    if ($view->current_display == 'block_1') {
+      $date = arg(1);
+      $date = isset($date) ? $date : date('Y-m-d');
+    }
+    else {
+      $date = isset($view->args[0]) ? $view->args[0] : date('Y-m-d');
+    }
+    // Dealing with week view.
+    if (strlen($date) > 7) {
+      $date_range = _redcat_customizations_get_date_week_range($date);
+    }
+    // Dealing with month view.
+    else {
+      $date_range = _redcat_customizations_get_date_month_range($date);
+    }
+    $view->display_handler->default_display->options['title'] = t('REDCAT Events - From @start_date to @end_date',
+      array(
+        '@start_date' => date_format_date($date_range[0], 'custom', 'Y-m-d'),
+        '@end_date' => date_format_date($date_range[1], 'custom', 'Y-m-d'),
+      )
+    );
+    $where_key = array_keys($query->where);
+    $where_key = $where_key[0];
+    foreach($query->where[$where_key]['conditions'] as $key => $condition) {
+      if (is_array($condition['value'])) {
+        foreach ($condition['value'] as $field_name => $value) {
+          $query->where[$where_key]['conditions'][$key]['field'] = str_replace('SEC_TO_TIME(-25200)', 'SEC_TO_TIME(0)', $query->where[$where_key]['conditions'][$key]['field']);
+          if (strpos($field_name,':field_data_field_content_date_range_field_content_date_range_value2') === 0) {
+            $query->where[$where_key]['conditions'][$key]['value'][$field_name] = substr((string) $date_range[0], 0, 10);
+          }
+          else if (strpos($field_name,':field_data_field_content_date_range_field_content_date_range_value') === 0) {
+            $query->where[$where_key]['conditions'][$key]['value'][$field_name] = substr((string) $date_range[1], 0, 10);
+          }
+        }
+      }
+    }
+  }
+  
+  // DEALING WITH SLIDESHOW
+  if ($view->name == 'event_gallery_image_slideshow') {
+    // Ensure we use an inner join for each of the tables in the slideshow.
+    foreach ($query->table_queue as $key => $table) {
+      if (isset($table['join'])) {
+        $join = $table['join'];
+        $join->type = 'INNER';
+        $query->table_queue[$key]['join'] = $join;
+      }
+    }
+  }
+}
+
+/**
+ * Get a week range based on the date.
+ * @param date a date in the format 'Y-m-d'
+ */
+function _redcat_customizations_get_date_week_range($date = NULL) {
+  static $date_range;
+  if (!isset($date_range)) {
+    $date_range = array();
+  }
+  if (!isset($date)) {
+    $date = date('Y-m-d');
+  }
+  if (!isset($date_range[$date])) {
+    $date_object = new DateObject($date);
+    $temp_date_range = array();
+    $temp_date_range[] = _redcat_customizations_date_add_interval($date_object, '-'. date_format_date($date_object, 'custom', 'w') .' day');
+    $temp_date_range[] = _redcat_customizations_date_add_interval($temp_date_range[0], '+ 6 day');
+    $date_range[$date] = $temp_date_range;
+  }
+  
+  return $date_range[$date];
+}
+
+/**
+ * Get a week range based on the date.
+ * @param date a date in the format 'Y-m-d'
+ */
+function _redcat_customizations_get_date_month_range($date = NULL) {
+  static $date_range;
+  if (!isset($date_range)) {
+    $date_range = array();
+  }
+  if (!isset($date)) {
+    $date = date('Y-m-d');
+  }
+  if (!isset($date_range[$date])) {
+    $date_object = new DateObject($date);
+    $temp_date_range = array();
+    $temp_date_range[] = $date_object;
+    $temp_date_range[] = _redcat_customizations_date_add_interval($temp_date_range[0], ' + 1 month - 1 day');
+    $date_range[$date] = $temp_date_range;
+  }
+  
+  return $date_range[$date];
+}
+
+
+/**
+ * Add a time interval to a given date
+ */
+function _redcat_customizations_date_add_interval($date, $interval) {
+  $date_string = (string) $date ;
+  $date_object = new DateObject($date_string . $interval);
+  return $date_object;
+}
+
+/**
+ * Retrieve a list of dates.
+ */
+function _redcat_customizations_retrieve_event_dates() {
+  static $dates;
+
+  if (!isset($dates)){
+    $dates = array();
+    $cached_dates = cache_get('redcat_customizations_event_dates');
+    if (!empty($cached_dates)) {
+      $dates = $cached_dates->data;
+    }
+    else {
+      $default_timezone = new DateTimeZone(date_default_timezone(FALSE));
+      
+      $field_info = field_info_field('field_content_date_time');
+      $table_info = $field_info['storage']['details']['sql']['FIELD_LOAD_CURRENT'];
+      foreach ($table_info as $key => $values) {
+        $table_name = $key;
+        $table_column = $values['value'];
+      }
+      
+      $results = db_query("SELECT $table_column FROM {$table_name} WHERE entity_type = 'node' AND bundle = 'redcat_event' ORDER BY $table_column ASC");
+      foreach ($results as $result) {
+        $date_object = new DateObject($result->$table_column, 'UTC');
+        $date_object->setTimezone($default_timezone);
+        $year = date_format($date_object, 'Y');
+        $month = date_format($date_object, 'm');
+        $day = date_format($date_object, 'd');
+        $dates[$year][$month][$day] = $day;
+      }
+      cache_set('redcat_customizations_event_dates', $dates, 'cache', CACHE_TEMPORARY);
+    }
+  }
+  return $dates;
+}
+
+/**
+ * Extract an actual entity object from its $build array.
+ *
+ * This is a bit more complicated than it should be, since core entities, contrib
+ * entities, and contrib entities based on EntityAPI all store their junk in
+ * different slots of the build array. See http://drupal.org/node/1170198.
+ *
+ * @param $build
+ *   The token string defined by the view.
+ * @param $entity_data
+ *   The token type.
+ */
+function _redcat_customizations_extract_entity_from_build($build) {
+  // EntityAPI often sticks stuff in here.
+  if (!empty($build['#entity'])) {
+    return $entity;
+  }
+  
+  // Other entities stick them here!
+  elseif (!empty($build['#' . $build['#entity_type']])) {
+    return $build['#' . $build['#entity_type']];
+  }
+
+  // Some entities are naughty.
+  elseif ($build['#entity_type'] == 'user') {
+    return $build['#account'];
+  }
+  elseif ($build['#entity_type'] == 'taxonomy_term') {
+    return $build['#term'];
+  }
+
+  return FALSE;
+}
+
+/**
+ * Ignore displaying new url.
+ */
+function _redcat_customizations_check_url_rewrite($status = NULL) {
+  static $current_status;
+  if (!isset($current_status)) {
+    $current_status = TRUE;
+  }
+  if (isset($status)) {
+    $current_status = $status;
+  }
+  return $current_status;
+}
